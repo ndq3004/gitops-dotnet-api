@@ -1,0 +1,80 @@
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code
+.vscode/
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+*.nuget.props
+*.nuget.targets
+
+# ASP.NET Scaffolding
+ScaffoldingReadMe.txt
+
+# Publish output
+publish/
+wwwroot/dist/
+wwwroot/lib/
+
+# Entity Framework
+*.mdf
+*.ldf
+
+# Logs
+*.log
+
+# Test Results
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# BenchmarkDotNet
+BenchmarkDotNet.Artifacts/
+
+# Azure
+*.azurePubxml
+
+# User-specific files
+*.rsuser
+*.userprefs
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# DotNet CLI
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Secrets
+secrets.json
+appsettings.Development.json
+
+# Local environment files
+.env
+.env.*
+
+# Generated files
+Generated/

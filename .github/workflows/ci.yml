@@ -1,0 +1,89 @@
+name: dotnet-api-ci
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: dotnet-api-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: 9.0.x
+  IMAGE_NAME: dotnet-api
+  ACR_NAME: your-acr-name
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test --configuration Release --no-build --verbosity normal
+
+      - name: Azure Login (OIDC)
+        if: github.ref == 'refs/heads/main'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR Login
+        if: github.ref == 'refs/heads/main'
+        run: az acr login --name $ACR_NAME
+
+      - name: Build and Push Container
+        if: github.ref == 'refs/heads/main'
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t $ACR_NAME.azurecr.io/$IMAGE_NAME:$IMAGE_TAG .
+          docker push $ACR_NAME.azurecr.io/$IMAGE_NAME:$IMAGE_TAG
+
+      - name: Summary
+        run: |
+          echo "Workflow completed."
+          echo "If this is main branch, image tag is: ${{ github.sha }}"
+
+  # Optional: update GitOps repo image tag
+  # Add a PAT in GITOPS_REPO_TOKEN or switch to GitHub App auth.
+  # update-gitops:
+  #   needs: build-test-publish
+  #   if: github.ref == 'refs/heads/main'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout GitOps Repo
+  #       uses: actions/checkout@v4
+  #       with:
+  #         repository: your-org/gitops-manifests
+  #         token: ${{ secrets.GITOPS_REPO_TOKEN }}
+  #         path: gitops
+  #
+  #     - name: Update image tag in values
+  #       run: |
+  #         cd gitops
+  #         sed -i "s/tag: .*/tag: ${{ github.sha }}/" environments/dev/api-values.yaml
+  #         git config user.name "github-actions"
+  #         git config user.email "github-actions@users.noreply.github.com"
+  #         git add .
+  #         git commit -m "chore: bump api image to ${{ github.sha }}" || echo "No changes"
+  #         git push
