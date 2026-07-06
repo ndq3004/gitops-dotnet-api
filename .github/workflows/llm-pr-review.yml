@@ -1,0 +1,183 @@
+name: PR Code Review
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: 9.0.x
+  SONAR_PROJECT_KEY: ${{ github.repository_owner }}_${{ github.event.repository.name }}
+
+jobs:
+  # sonar-review:
+  #   name: SonarCloud review
+  #   runs-on: ubuntu-latest
+  #
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+  #
+  #     - name: Setup Java
+  #       uses: actions/setup-java@v4
+  #       with:
+  #         distribution: temurin
+  #         java-version: 17
+  #
+  #     - name: Setup .NET
+  #       uses: actions/setup-dotnet@v4
+  #       with:
+  #         dotnet-version: ${{ env.DOTNET_VERSION }}
+  #
+  #     - name: Validate SonarCloud secrets
+  #       env:
+  #         SONAR_ORG: ${{ secrets.SONAR_ORG }}
+  #         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  #       run: |
+  #         test -n "$SONAR_ORG"
+  #         test -n "$SONAR_TOKEN"
+  #
+  #     - name: Install Sonar Scanner
+  #       run: dotnet tool install --global dotnet-sonarscanner
+  #
+  #     - name: SonarCloud begin
+  #       env:
+  #         SONAR_ORG: ${{ secrets.SONAR_ORG }}
+  #         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  #       run: |
+  #         dotnet sonarscanner begin \
+  #           /k:"${{ env.SONAR_PROJECT_KEY }}" \
+  #           /o:"$SONAR_ORG" \
+  #           /d:sonar.host.url="https://sonarcloud.io" \
+  #           /d:sonar.token="$SONAR_TOKEN" \
+  #           /d:sonar.qualitygate.wait=true
+  #
+  #     - name: Restore
+  #       run: dotnet restore
+  #
+  #     - name: Build
+  #       run: dotnet build --configuration Release --no-restore
+  #
+  #     - name: Test
+  #       run: dotnet test --configuration Release --no-build --verbosity normal
+  #
+  #     - name: SonarCloud end
+  #       env:
+  #         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  #       run: dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
+
+  llm-review:
+    name: LLM review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate OpenAI secret
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: test -n "$OPENAI_API_KEY"
+
+      - name: Run LLM reviewer
+        uses: actions/github-script@v7
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.info("No pull request payload found; skipping LLM review.");
+              return;
+            }
+
+            const prNumber = pr.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const filesResp = await github.rest.pulls.listFiles({
+              owner,
+              repo,
+              pull_number: prNumber,
+              per_page: 100
+            });
+
+            const files = filesResp.data
+              .filter(file => file.patch)
+              .slice(0, 12);
+
+            let combined = [
+              `PR #${prNumber}: ${pr.title}`,
+              pr.body || "",
+              "Changed files, limited to first 12 patch files:"
+            ].join("\n\n");
+
+            for (const file of files) {
+              combined += `\n\nFile: ${file.filename}\nPatch:\n${file.patch}\n----`;
+            }
+
+            if (combined.length > 16000) {
+              combined = combined.slice(0, 16000);
+            }
+
+            const messages = [
+              {
+                role: "system",
+                content: [
+                  "You are a senior .NET pull request reviewer.",
+                  "Focus on actionable issues only: bugs, missing error handling, security vulnerabilities, architectural concerns, duplication, code smells, and missing tests.",
+                  "Start with exactly one line: LLM_DECISION: APPROVE or LLM_DECISION: REQUEST_CHANGES.",
+                  "Use REQUEST_CHANGES only for issues that should block merging.",
+                  "After that, write concise Markdown review notes."
+                ].join(" ")
+              },
+              {
+                role: "user",
+                content: `Review this PR diff:\n\n${combined}`
+              }
+            ];
+
+            const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+              },
+              body: JSON.stringify({
+                model: "gpt-4o-mini",
+                messages,
+                temperature: 0.1,
+                max_tokens: 1000
+              })
+            });
+
+            if (!resp.ok) {
+              throw new Error(`OpenAI API error ${resp.status}: ${await resp.text()}`);
+            }
+
+            const data = await resp.json();
+            const reviewBody = data.choices?.[0]?.message?.content || "LLM reviewer returned no content.";
+
+            await github.rest.pulls.createReview({
+              owner,
+              repo,
+              pull_number: prNumber,
+              event: "COMMENT",
+              body: reviewBody
+            });
+
+            if (/LLM_DECISION:\s*REQUEST_CHANGES/i.test(reviewBody)) {
+              core.setFailed("LLM reviewer requested changes.");
+            }
